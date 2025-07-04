@@ -1,0 +1,253 @@
+From 1be313fe895ff767fad1b1b88d7376678faf8313 Mon Sep 17 00:00:00 2001
+From: Umer Uddin <umer.uddin@mentallysanemainliners.org>
+Date: Fri, 4 Jul 2025 18:23:11 +0100
+Subject: [PATCH] ECT Dump Payload
+
+---
+ engine.mk                         |   2 +-
+ platform/exynos9830/exynos_font.h |   5 +-
+ platform/exynos9830/platform.c    | 170 ++++++------------------------
+ 3 files changed, 35 insertions(+), 142 deletions(-)
+
+diff --git a/engine.mk b/engine.mk
+index f02f86df..44f456cc 100644
+--- a/engine.mk
++++ b/engine.mk
+@@ -96,7 +96,7 @@ EXTRA_MODULE_ASMFLAGS :=
+ #GLOBAL_COMPILEFLAGS += -Winline
+ #GLOBAL_COMPILEFLAGS += -Wredundant-decls
+ 
+-GLOBAL_COMPILEFLAGS += -Werror
++#GLOBAL_COMPILEFLAGS += -Werror
+ 
+ GLOBAL_LDFLAGS += $(addprefix -L,$(LKINC))
+ 
+diff --git a/platform/exynos9830/exynos_font.h b/platform/exynos9830/exynos_font.h
+index db485ec4..a903e466 100644
+--- a/platform/exynos9830/exynos_font.h
++++ b/platform/exynos9830/exynos_font.h
+@@ -20,8 +20,7 @@
+  * limitations under the License.
+  */
+ 
+-#ifndef __EYXNOS_FONT_H__
+-#define __EXYNOS_FONT_H__
++#pragma once
+ 
+ #define FONT_X 16
+ #define FONT_Y 27
+@@ -2782,5 +2781,3 @@ static u8 const font[] = {
+ 	0x00, 0x00, //
+ 	0x00, 0x00, //
+ };
+-
+-#endif /* __EXYNOS_FONT_H__ */
+diff --git a/platform/exynos9830/platform.c b/platform/exynos9830/platform.c
+index 85ab81fb..7a1a60ef 100644
+--- a/platform/exynos9830/platform.c
++++ b/platform/exynos9830/platform.c
+@@ -386,34 +386,11 @@ void arm_generic_timer_disable(void)
+ 
+ void platform_early_init(void)
+ {
+-	unsigned int rst_stat = readl(EXYNOS9830_POWER_RST_STAT);
+-	unsigned int dfd_en = readl(EXYNOS9830_POWER_RESET_SEQUENCER_CONFIGURATION);
+-
+-	if (!((rst_stat & (WARM_RESET | LITTLE_WDT_RESET)) &&
+-			dfd_en & EXYNOS9830_EDPCSR_DUMP_EN)) {
+-		invalidate_dcache_all();
+-		cpu_common_init();
+-		clean_invalidate_dcache_all();
+-	}
+-
+-	// Temporary, since we do not have panel driver
+ 	writel(0x1281, DECON0_BASE_ADDR + HW_SW_TRIG_CONTROL);
+-
+-	read_chip_id();
+-	read_chip_rev();
+-
+-#ifdef CONFIG_EXYNOS_BOOTLOADER_DISPLAY
+-	display_panel_init();
+ 	initialize_fbs();
+-#endif
+-	set_first_boot_device_info();
+-
+-	uart_console_init();
+-	printf("lk3rd built on %s, at %s\n", __DATE__, __TIME__);
+-	printf("Welcome to lk3rd!\n");
+-	dss_boot_cnt();
+ 
+ 	arm_gic_init();
++
+ 	writel(1 << 8, EXYNOS9830_MCT_G_TCON);
+ 	arm_generic_timer_init(ARCH_TIMER_IRQ, 26000000);
+ }
+@@ -451,35 +428,22 @@ static void print_acpm_version(void)
+ #endif /* ifdef EXYNOS_ACPM_BASE */
+ }
+ 
++typedef struct
++{
++	char magic[4];
++	char version[4];
++	uint32_t total_size;
++	int num_of_heads;
++} ect_header_t;
++
++void platform_prepare_reboot(void);
++void platform_do_reboot(const char *cmd_buf);
++
+ void platform_init(void)
+ {
+-	u32 ret = 0;
+-	u32 rst_stat = readl(POWER_RST_STAT);
+-	int mainline_quirks_enabled;
+-
+-	display_flexpmu_dbg();
+-	print_acpm_version();
+-
+-	display_rst_stat(rst_stat);
+-	get_bootloader_cmdline();
+-	get_bootloader_reserved_memory();
+-	get_board_rev();
+-	read_dram_info();
+-	pmic_init();
+-	display_pmic_info();
+-#ifdef CONFIG_SUB_PMIC_S2DOS05
+-	pmic_init_s2dos05();
+-#else
+-	sub_pmic_s2mpb02_init();
+-#endif
+-#ifdef CONFIG_S2MU106_CHARGER
+-	s2mu106_charger_init();
+-	fg_init_s2mu106();
+-#endif
++	int ret;
++	ect_header_t *head = (ect_header_t *)0x90000000;
+ 
+-	/*
+-	 * check_charger_connect();
+-	 */
+ 	if (get_boot_device() == BOOT_UFS) {
+ 		ufs_alloc_memory();
+ 		ufs_init(2);
+@@ -488,97 +452,29 @@ void platform_init(void)
+ 			ufs_init(2);
+ 	}
+ 
+-	/*
+-	 * Initialize mmc for all channel.
+-	 * Sometimes need mmc device when it is not boot device.
+-	 * So always call mmc_init().
+-	 */
+-#ifndef CONFIG_SKIP_MMC_INIT
+-	mmc_init(MMC_CHANNEL_SD);
+-#else
+-	printf("Device does not have an SD card slot! Skip SD init\n");
+-#endif
+ 	part_init();
+ 
+-	dss_fdt_init();
+-	dfd_get_dbgc_version();
+-	if (rst_stat & (WARM_RESET | LITTLE_WDT_RESET))
+-		dfd_run_post_processing();
+-
+-	dfd_display_core_stat();
+-	if (*(unsigned int *)DRAM_BASE == 0xabcdef) {
+-		unsigned int dfd_en =
+-			readl(EXYNOS9830_POWER_RESET_SEQUENCER_CONFIGURATION);
+-		unsigned int rst_stat = readl(EXYNOS9830_POWER_RST_STAT);
+-
+-		/* read secure chip state */
+-		if (read_secure_chip() == 0)
+-			printf("Secure boot is disabled (non-secure chip)\n");
+-		else if (read_secure_chip() == 1)
+-			printf("Secure boot is enabled (test key)\n");
+-		else if (read_secure_chip() == 2)
+-			printf("Secure boot is enabled (secure chip)\n");
+-		else
+-			printf("Can not read secure chip state\n");
+-
+-		if ((rst_stat & (WARM_RESET | LITTLE_WDT_RESET)) &&
+-		      (dfd_en & EXYNOS9830_EDPCSR_DUMP_EN)) {
+-			/* in case of dumpgpr, do not load ldfw/sp */
+-			printf("Dumpgpr mode. do not load ldfw/sp .\n");
+-			goto by_dumpgpr_out;
+-		}
++	void *partition = part_get("boot");
++	struct pit_entry *boot_entry = (struct pit_entry *)partition;
+ 
+-		if (!init_keystorage())
+-			printf("keystorage: init done successfully.\n");
+-		else
+-			printf("keystorage: init failed.\n");
+-
+-		if (!init_ssp())
+-			printf("ssp: init done successfully.\n");
+-		else
+-			printf("ssp: init failed.\n");
+-
+-		if (!init_ldfws())
+-			printf("ldfw: init done successfully.\n");
+-		else
+-			printf("ldfw: init failed.\n");
+-
+-#if defined(CONFIG_USE_RPMB)
+-		rpmb_key_programming();
+-#if defined(CONFIG_USE_AVB20)
+-		rpmb_load_boot_table();
+-#endif
+-#endif
+-		ret = (u32)init_sp();
+-		if (!ret)
+-			printf("secure_payload: init done successfully.\n");
+-		else
+-			printf("secure_payload: init failed.\n");
+-
+-		/* Enabling H-Arx */
+-		if (s5p_chip_rev.main >= SOC_REVISION_EVT1) {
+-			if (load_and_init_harx()) {
+-				printf("CAN NOT enter EL2\n");
+-			} else {
+-				if (load_and_init_harx_plugin(EXYNOS_HARX_PLUGIN_PART_NAME,
+-								EXYNOS_HARX_PLUGIN_BASE_ADDR))
+-					printf("There is no H-Arx plug-in\n");
+-			}
+-		}
++	print_lcd_update(FONT_WHITE, FONT_BLACK, "ECT Dump Payload Starting\n");
++	print_lcd_update(FONT_WHITE, FONT_BLACK, "ECT Size: 0x%x\n", head->total_size);
++	print_lcd_update(FONT_WHITE, FONT_BLACK, "Boot partition size: %dMiB\n", (((boot_entry->blknum * PIT_UFS_BLK_SIZE) / 1024) / 1024));
+ 
+-by_dumpgpr_out:
+-		print_el3_monitor_version();
++	if ((boot_entry->blknum * PIT_UFS_BLK_SIZE) > head->total_size)
++	{
++		print_lcd_update(FONT_GREEN, FONT_BLACK, "The boot partition is big enough to store the ECT App! Dumping in 5s...\n");
++		mdelay(5000);
++		part_write(partition, (void *)0x90000000);
++		print_lcd_update(FONT_GREEN, FONT_BLACK, "ECT Dumped! Rebooting into recovery in 5s.\n");
++		mdelay(5000);
++		platform_prepare_reboot();
++		platform_do_reboot("reboot-recovery");
++	}
++	else
++	{
++		print_lcd_update(FONT_RED, FONT_BLACK, "The boot partition is too small to store the ECT App. Looping infinitely.\n");
+ 	}
+ 
+-	display_tmu_info();
+-	display_trip_info();
+-
+-	display_dvfs_info();
+-
+-	chg_init_max77705();
+-
+-	mainline_quirks_enabled = lk3rd_get_mainline_quirks();
+-
+-	if(mainline_quirks_enabled != 0 && mainline_quirks_enabled != 1) // Not a sane value, most likely uninitialised, so we initialise it.
+-		lk3rd_switch_mainline_quirks(false);
++	while(1);
+ }
+-- 
+2.50.0
+
